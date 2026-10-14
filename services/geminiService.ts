@@ -8,21 +8,44 @@ import { Job } from '../types';
  * Instead we call our Vercel Serverless Function: POST /api/gemini
  * Server env var: GEMINI_API_KEY
  */
+const GEMINI_TIMEOUT_MS = 120_000;
+// Vercel's request payload has a limit; Base64 is larger than the original file.
+const MAX_GEMINI_REQUEST_BYTES = 4_000_000;
+
 const callGemini = async (payload: { model: string; contents: any; config?: any }) => {
-  const res = await fetch("/api/gemini", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json().catch(() => ({} as any));
-
-  if (!res.ok) {
-    const msg = data?.error || `Gemini request failed (${res.status})`;
-    throw new Error(msg);
+  const body = JSON.stringify(payload);
+  if (new Blob([body]).size > MAX_GEMINI_REQUEST_BYTES) {
+    throw new Error('حجم الملفات بعد التحويل أكبر من الحد المسموح. يرجى ضغط السيرة الذاتية والاستمارة ثم إعادة المحاولة.');
   }
-
-  return data as { text: string; raw?: any };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok) {
+      const message = typeof data?.error === 'string' ? data.error : 'Gemini request failed (' + res.status + ')';
+      throw new Error(message);
+    }
+    if (typeof data?.text !== 'string' || !data.text.trim()) {
+      throw new Error('لم تستجب خدمة الذكاء الاصطناعي بنتيجة صالحة. حاول مرة أخرى.');
+    }
+    return data as { text: string };
+  } catch (error: any) {
+    if (controller.signal.aborted) {
+      throw new Error('انتهت مهلة تحليل الملف (دقيقتان). يمكنك إعادة المحاولة دون إعادة رفع الملفات.');
+    }
+    if (error instanceof TypeError) {
+      throw new Error('تعذر الاتصال بخدمة تحليل الملفات. يرجى مراجعة الاتصال وإعادة المحاولة.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 
@@ -30,17 +53,28 @@ const callGemini = async (payload: { model: string; contents: any; config?: any 
 export const fileToGenerativePart = async (file: File): Promise<{ inlineData: { data: string; mimeType: string } }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const base64String = result.split(',')[1];
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string' || !result.includes(',')) {
+        reject(new Error('تعذر قراءة الملف المرفوع.'));
+        return;
+      }
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      const mimeTypes: Record<string, string> = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        txt: 'text/plain',
+      };
       resolve({
         inlineData: {
-          data: base64String,
-          mimeType: file.type,
+          data: result.split(',')[1],
+          mimeType: file.type || mimeTypes[extension] || 'application/octet-stream',
         },
       });
     };
-    reader.onerror = reject;
+    reader.onerror = () => reject(new Error('تعذر قراءة الملف المرفوع.'));
+    reader.onabort = () => reject(new Error('تم إلغاء قراءة الملف.'));
     reader.readAsDataURL(file);
   });
 };
@@ -50,6 +84,11 @@ export const analyzeCV = async (cvFile: File | null, appFormFile: File | null, j
   try {
     if (!cvFile && !appFormFile) {
       throw new Error("No files provided for analysis.");
+    }
+    // Keep the Base64 request below Vercel's request-size limit.
+    const combinedBytes = (cvFile?.size || 0) + (appFormFile?.size || 0);
+    if (combinedBytes > 2_800_000) {
+      throw new Error('حجم السيرة الذاتية والاستمارة كبير جدًا للتحليل المباشر. يرجى تقليل الحجم الإجمالي إلى أقل من 2.8 ميجابايت.');
     }
 
     const parts = [];
