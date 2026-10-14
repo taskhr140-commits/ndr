@@ -797,7 +797,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
   const updateCandidateFile = (id: string, type: 'cv' | 'form', file: File | null) => {
     setCandidates(candidates.map(c => {
       if (c.id === id) {
-        return type === 'cv' ? { ...c, cvFile: file, name: file ? file.name.split('.')[0] : c.name } : { ...c, appFormFile: file };
+        return type === 'cv' ? { ...c, cvFile: file, name: file ? file.name.split('.')[0] : c.name, status: 'idle' as const, result: undefined, errorMessage: undefined } : { ...c, appFormFile: file, status: 'idle' as const, result: undefined, errorMessage: undefined };
       }
       return c;
     }));
@@ -834,7 +834,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
             next[i] = { 
               ...next[i], 
               cvFile: cvFiles[fileIndex],
-              name: cvFiles[fileIndex].name.split('.')[0] 
+              name: cvFiles[fileIndex].name.split('.')[0], status: 'idle', result: undefined, errorMessage: undefined
             };
             fileIndex++;
           }
@@ -842,7 +842,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
 
         while (fileIndex < cvFiles.length) {
           const file = cvFiles[fileIndex];
-          next.push({ id: `${Date.now()}-cv-${fileIndex}`, name: file.name.split('.')[0], cvFile: null, appFormFile: null, status: 'idle', stage: 'New', logs: [] });
+          next.push({ id: `${Date.now()}-cv-${fileIndex}`, name: file.name.split('.')[0], cvFile: file, appFormFile: null, status: 'idle', stage: 'New', logs: [] });
           fileIndex++;
         }
         return next;
@@ -863,7 +863,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
 
         for (let i = 0; i < next.length && fileIndex < formFiles.length; i++) {
           if (!next[i].appFormFile) {
-            next[i] = { ...next[i], appFormFile: formFiles[fileIndex] };
+            next[i] = { ...next[i], appFormFile: formFiles[fileIndex], status: 'idle', result: undefined, errorMessage: undefined };
             fileIndex++;
           }
         }
@@ -932,7 +932,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
       isAutoMatch = true;
     } else {
       const job = jobs.find(j => j.id === selectedJobId);
-      if (job) analysisContext = `Job: ${job.title}\nDesc: ${job.description}`;
+      if (job) analysisContext = `Job: ${job.title}\nDesc: ${job.description}\nRequirements: ${job.requirements}`;
       else { setIsProcessingBatch(false); return; }
     }
 
