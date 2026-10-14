@@ -903,7 +903,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
   const formsInputRef = useRef<HTMLInputElement>(null);
   const excelImportRef = useRef<HTMLInputElement>(null);
 
-  const isEmailConfigured = Boolean(SERVICE_ID && TEMPLATE_ID && PUBLIC_KEY && SERVICE_ID !== 'YOUR_SERVICE_ID');
+  const isEmailConfigured = Boolean(SERVICE_ID && TEMPLATE_ID && PUBLIC_KEY && (SERVICE_ID as string) !== 'YOUR_SERVICE_ID');
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setNotification({ message, type });
