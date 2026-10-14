@@ -104,7 +104,8 @@ export const updateCandidateInDB = async (candidate: CandidateInput) => {
   try {
     // Temporary slots must be created via addCandidateToDB, not updated.
     if (!candidate.id || candidate.id.includes('-') || candidate.id.length < 15) {
-      throw new Error('هذا المرشح لم يُحفظ في قاعدة البيانات بعد.');
+      // Pending entries are created separately via addCandidateToDB.
+      return;
     }
     const candidateData = toCandidateDocument(candidate);
     const candidateRef = doc(db, CANDIDATES_COLLECTION, candidate.id);
