@@ -332,7 +332,7 @@ const CandidateCard: React.FC<{
             </div>
           ) : (
             <div className="text-center py-8 text-slate-400">
-               {candidate.status === 'idle' ? 'بانتظار التحليل...' : candidate.status === 'analyzing' ? 'جاري تحليل الملف...' : 'حدث خطأ في التحليل'}
+               {candidate.status === 'idle' ? ((candidate.cvFile || candidate.appFormFile) ? 'الملفات جاهزة للتحليل. اضغط زر تحليل الملفات لبدء التقييم.' : 'ارفع السيرة الذاتية أو الاستمارة للبدء.') : candidate.status === 'analyzing' ? 'جاري تحليل الملف...' : 'حدث خطأ في التحليل'}
             </div>
           )}
         </div>
@@ -750,7 +750,7 @@ const DEFAULT_TEMPLATES: MessageTemplate[] = [
 ];
 
 const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates, onCandidateUpdate, onCandidateAdd, onCandidateDelete }) => {
-  const [selectedJobId, setSelectedJobId] = useState<string>('');
+  const [selectedJobId, setSelectedJobId] = useState<string>('auto-match');
   const [activeTab, setActiveTab] = useState<CandidateStage | 'All'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -1266,7 +1266,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
             <button onClick={handleSmartExcelExport} disabled={!candidates.some(c => c.status === 'success')} className="px-5 py-3 bg-green-600 text-white hover:bg-green-700 rounded-xl flex items-center gap-2 disabled:opacity-50 font-bold whitespace-nowrap shadow-green-200 shadow-lg"><FileSpreadsheet className="w-5 h-5" /> <span>توليد تقرير Excel (تحليل المرشح)</span></button>
             
             <button onClick={exportResultsToExcel} disabled={!candidates.some(c => c.status === 'success')} className="px-5 py-3 bg-slate-50 text-slate-700 hover:bg-slate-100 rounded-xl flex items-center gap-2 disabled:opacity-50 font-medium whitespace-nowrap"><FileSpreadsheet className="w-5 h-5" /> <span>تصدير بسيط</span></button>
-            <button onClick={handleBatchAnalyze} disabled={!selectedJobId || isProcessingBatch} className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center gap-3 shadow-lg shadow-blue-200 whitespace-nowrap">{isProcessingBatch ? <Loader2 className="animate-spin" /> : (selectedJobId === 'auto-match' ? <Sparkles className="w-5 h-5" /> : <Users className="w-5 h-5" />)}<span>{selectedJobId === 'auto-match' ? 'تحليل ذكي (Auto-Match)' : 'تحليل جميع الملفات'}</span></button>
+            <button onClick={handleBatchAnalyze} disabled={!selectedJobId || isProcessingBatch || !candidates.some(c => (c.cvFile || c.appFormFile) && c.status !== 'success')} className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center gap-3 shadow-lg shadow-blue-200 whitespace-nowrap">{isProcessingBatch ? <Loader2 className="animate-spin" /> : (selectedJobId === 'auto-match' ? <Sparkles className="w-5 h-5" /> : <Users className="w-5 h-5" />)}<span>{selectedJobId === 'auto-match' ? 'تحليل الملفات (مطابقة تلقائية)' : 'تحليل جميع الملفات'}</span></button>
           </div>
       </div>
 
