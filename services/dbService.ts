@@ -51,6 +51,14 @@ export const deleteJobFromDB = async (id: string) => {
 };
 
 // --- CANDIDATES COLLECTION ---
+// Firestore rejects undefined values, File objects and other browser-only data.
+// Keep unsaved UI status and uploaded documents out of database writes.
+const toCandidateDocument = (candidate: CandidateInput) => {
+  const { cvFile, appFormFile, id, saveIssue, ...candidateData } = candidate;
+  return JSON.parse(JSON.stringify(candidateData));
+};
+
+// --- CANDIDATES COLLECTION ---
 const CANDIDATES_COLLECTION = "candidates";
 
 export const fetchCandidatesFromDB = async (): Promise<CandidateInput[]> => {
@@ -79,7 +87,7 @@ export const fetchCandidatesFromDB = async (): Promise<CandidateInput[]> => {
 export const addCandidateToDB = async (candidate: CandidateInput): Promise<string> => {
   if (!db) throw new Error("Database connection not available");
   try {
-    const { cvFile, appFormFile, id, ...candidateData } = candidate;
+    const candidateData = toCandidateDocument(candidate);
     const docRef = await addDoc(collection(db, CANDIDATES_COLLECTION), {
       ...candidateData,
       createdAt: new Date().toISOString()
@@ -92,16 +100,20 @@ export const addCandidateToDB = async (candidate: CandidateInput): Promise<strin
 };
 
 export const updateCandidateInDB = async (candidate: CandidateInput) => {
-  if (!db) return;
+  if (!db) throw new Error("Database connection not available");
   try {
-    // تجاهل المعرفات المؤقتة التي لم تحفظ بعد
-    if (!candidate.id || candidate.id.includes('-') || candidate.id.length < 15) return;
-    
-    const { cvFile, appFormFile, id, ...candidateData } = candidate;
-    const candidateRef = doc(db, CANDIDATES_COLLECTION, id);
-    await setDoc(candidateRef, { ...candidateData }, { merge: true });
+    // Temporary slots must be created via addCandidateToDB, not updated.
+    if (!candidate.id || candidate.id.includes('-') || candidate.id.length < 15) {
+      // Pending entries are created separately via addCandidateToDB.
+      return;
+    }
+    const candidateData = toCandidateDocument(candidate);
+    const candidateRef = doc(db, CANDIDATES_COLLECTION, candidate.id);
+    await setDoc(candidateRef, candidateData, { merge: true });
   } catch (error) {
     console.error("Error updating candidate:", error);
+    // Propagate the Firestore failure so UI does not report a false success.
+    throw error;
   }
 };
 

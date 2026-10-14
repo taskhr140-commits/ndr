@@ -54,6 +54,8 @@ export interface CandidateInput {
   status: 'idle' | 'analyzing' | 'success' | 'error';
   result?: AnalysisResult;
   errorMessage?: string;
+  // UI-only state: last persistence failure. Do not write this to Firestore.
+  saveIssue?: string;
   // New Workflow Fields
   stage: CandidateStage;
   logs: LogEntry[];

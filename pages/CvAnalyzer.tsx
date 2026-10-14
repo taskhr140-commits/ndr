@@ -52,6 +52,30 @@ const translateRecommendation = (rec: string): string => {
 
 // --- HELPER COMPONENTS ---
 
+const describeSaveFailure = (error: unknown): string => {
+  const err = error as { code?: string; message?: string };
+  const code = (err?.code || '').toLowerCase();
+  const message = (err?.message || '').toLowerCase();
+  if (code.includes('permission-denied') || message.includes('insufficient permissions')) {
+    return 'رفض Firebase الحفظ بسبب صلاحيات قاعدة البيانات (permission-denied).';
+  }
+  if (code.includes('unauthenticated')) return 'انتهت صلاحية تسجيل الدخول إلى Firebase؛ أعد تسجيل الدخول.';
+  if (code.includes('unavailable') || code.includes('deadline-exceeded')) {
+    return 'تعذر الاتصال بقاعدة Firebase مؤقتًا؛ حاول إعادة الحفظ.';
+  }
+  if (code.includes('resource-exhausted')) return 'تم بلوغ حد استخدام قاعدة Firebase.';
+  if (code.includes('invalid-argument') || message.includes('unsupported field value') || message.includes('undefined')) {
+    return 'تحتوي بيانات المرشح على حقل لا يقبله Firebase.';
+  }
+  if (message.includes('database connection not available')) return 'لم يتم الاتصال بقاعدة Firebase.';
+  if (message.includes('this document is too large') || message.includes('document too large')) {
+    return 'حجم سجل المرشح يتجاوز الحد المسموح في Firebase.';
+  }
+  return code ? 'فشل الحفظ لدى Firebase (' + code + ').' : 'تعذر حفظ النتيجة في Firebase. حاول إعادة الحفظ.';
+};
+
+
+
 const ActionBtn: React.FC<{ icon: any, label: string, onClick: () => void, color: string }> = ({ icon: Icon, label, onClick, color }) => (
   <button onClick={onClick} className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-${color}-50 text-${color}-600`}>
     <Icon className="w-4 h-4" /> {label}
@@ -63,12 +87,14 @@ const CandidateCard: React.FC<{
   index: number;
   onUpdateFile: (id: string, type: 'cv' | 'form', file: File | null) => void;
   onRemove: (id: string) => void;
+  onRetrySave: (id: string) => void;
+  savingCandidateId: string | null;
   onAction: (id: string, action: MessageTemplate['type']) => void;
   onDownloadPDF: (c: CandidateInput) => void;
   onManualStageChange: (id: string, newStage: CandidateStage) => void;
   job?: Job;
   autoExpand?: boolean;
-}> = ({ candidate, index, onUpdateFile, onRemove, onAction, onDownloadPDF, onManualStageChange, job, autoExpand }) => {
+}> = ({ candidate, index, onUpdateFile, onRemove, onRetrySave, savingCandidateId, onAction, onDownloadPDF, onManualStageChange, job, autoExpand }) => {
   const [isExpanded, setIsExpanded] = useState(autoExpand || false);
   const [manualStage, setManualStage] = useState<CandidateStage>(candidate.stage);
 
@@ -207,6 +233,20 @@ const CandidateCard: React.FC<{
            </button>
         </div>
       </div>
+
+      {/* Saving failed, but the AI result is still available for retry. */}
+      {candidate.saveIssue && (
+        <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
+          <div className="flex items-start gap-2 text-sm font-medium">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>التحليل مكتمل، لكن النتيجة غير محفوظة: {candidate.saveIssue} لا تُحدّث الصفحة قبل نجاح الحفظ أو تصدير التقرير.</span>
+          </div>
+          <button type="button" onClick={() => onRetrySave(candidate.id)} disabled={savingCandidateId !== null} className="flex items-center gap-2 rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">
+            {savingCandidateId === candidate.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {savingCandidateId === candidate.id ? 'جاري الحفظ...' : 'إعادة حفظ النتيجة'}
+          </button>
+        </div>
+      )}
 
       {/* Expanded Content */}
       {isExpanded && (
@@ -677,7 +717,7 @@ interface CvAnalyzerProps {
   jobs: Job[];
   candidates: CandidateInput[];
   setCandidates: React.Dispatch<React.SetStateAction<CandidateInput[]>>;
-  onCandidateUpdate?: (candidate: CandidateInput) => void;
+  onCandidateUpdate?: (candidate: CandidateInput) => Promise<void>;
   onCandidateAdd?: (candidate: CandidateInput) => Promise<string>;
   onCandidateDelete?: (id: string) => void;
 }
@@ -767,6 +807,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
   }>({ isOpen: false, candidateId: null, actionType: null });
 
   const [isProcessingBatch, setIsProcessingBatch] = useState(false);
+  const [savingCandidateId, setSavingCandidateId] = useState<string | null>(null);
   
   const cvInputRef = useRef<HTMLInputElement>(null);
   const formsInputRef = useRef<HTMLInputElement>(null);
@@ -940,6 +981,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
     let completedCount = 0;
     let failedCount = 0;
     let saveFailureCount = 0;
+    let firstSaveFailure = '';
     for (let i = 0; i < newCandidates.length; i++) {
       const cand = newCandidates[i];
       if ((cand.cvFile || cand.appFormFile) && cand.status !== 'success') {
@@ -965,19 +1007,22 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
              
              // Success - Create the updated candidate object
              const updatedCand = { ...cand, status: 'success' as const, result, jobId: assignedJobId, jobTitle: assignedJobTitle };
-             newCandidates[i] = updatedCand;
+             newCandidates[i] = { ...updatedCand, saveIssue: undefined };
              completedCount++;
              // Persist independently: database failures must not erase AI results.
              try {
                if (onCandidateAdd && (!cand.id || cand.id.includes('-') || cand.id.length < 20)) {
                  const realId = await onCandidateAdd(updatedCand);
-                 newCandidates[i] = { ...updatedCand, id: realId };
+                 newCandidates[i] = { ...updatedCand, id: realId, saveIssue: undefined };
                } else if (onCandidateUpdate) {
                  await onCandidateUpdate(updatedCand);
                }
              } catch (saveError) {
                console.error('Candidate analysis completed but database saving failed:', saveError);
                saveFailureCount++;
+               const saveIssue = describeSaveFailure(saveError);
+               if (!firstSaveFailure) firstSaveFailure = saveIssue;
+               newCandidates[i] = { ...updatedCand, saveIssue };
              }
           }
         } catch (error: any) {
@@ -1009,11 +1054,36 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
     }
     setIsProcessingBatch(false);
     if (saveFailureCount > 0) {
-      showToast('اكتمل تحليل ' + completedCount + ' ملف، لكن تعذر حفظ ' + saveFailureCount + ' نتيجة. راجع اتصال قاعدة البيانات.', 'error');
+      showToast('تم تحليل ' + completedCount + ' ملف، لكن لم تُحفظ ' + saveFailureCount + ' نتيجة: ' + firstSaveFailure, 'error');
     } else if (failedCount > 0) {
       showToast('نجح تحليل ' + completedCount + ' ملف وتعذر تحليل ' + failedCount + ' ملف. راجع السبب لكل مرشح.', 'error');
     } else {
       showToast('تم تحليل ' + completedCount + ' ملف بنجاح.', 'success');
+    }
+  };
+
+  const retryCandidateSave = async (id: string) => {
+    if (savingCandidateId !== null) return;
+    const candidate = candidates.find(c => c.id === id);
+    if (!candidate?.result || candidate.status !== 'success') return;
+    setSavingCandidateId(id);
+    try {
+      if (onCandidateAdd && (!candidate.id || candidate.id.includes('-') || candidate.id.length < 20)) {
+        const newId = await onCandidateAdd(candidate);
+        setCandidates(prev => prev.map(c => c.id === id ? { ...c, id: newId, saveIssue: undefined } : c));
+      } else if (onCandidateUpdate) {
+        await onCandidateUpdate(candidate);
+        setCandidates(prev => prev.map(c => c.id === id ? { ...c, saveIssue: undefined } : c));
+      } else {
+        throw new Error('Database connection not available');
+      }
+      showToast('تم حفظ نتيجة المرشح في Firebase بنجاح دون إعادة التحليل.', 'success');
+    } catch (saveError) {
+      const saveIssue = describeSaveFailure(saveError);
+      setCandidates(prev => prev.map(c => c.id === id ? { ...c, saveIssue } : c));
+      showToast('تعذر حفظ النتيجة: ' + saveIssue, 'error');
+    } finally {
+      setSavingCandidateId(null);
     }
   };
 
@@ -1278,6 +1348,8 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
              index={index} 
              onUpdateFile={updateCandidateFile} 
              onRemove={removeCandidateSlot} 
+             onRetrySave={retryCandidateSave}
+             savingCandidateId={savingCandidateId}
              onAction={handleActionClick} 
              onDownloadPDF={handleDownloadPDF}
              onManualStageChange={changeCandidateStage} 
