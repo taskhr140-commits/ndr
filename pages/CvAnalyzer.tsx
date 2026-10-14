@@ -937,6 +937,9 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
     }
 
     const newCandidates = [...candidates];
+    let completedCount = 0;
+    let failedCount = 0;
+    let saveFailureCount = 0;
     for (let i = 0; i < newCandidates.length; i++) {
       const cand = newCandidates[i];
       if ((cand.cvFile || cand.appFormFile) && cand.status !== 'success') {
@@ -945,6 +948,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
         try {
           const result = await analyzeCV(cand.cvFile, cand.appFormFile, analysisContext);
           if (result.isCvOrApplication === false) {
+             failedCount++;
              newCandidates[i] = { ...cand, status: 'error', errorMessage: `الملف غير صالح` };
           } else {
              let assignedJobId = selectedJobId;
@@ -962,16 +966,18 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
              // Success - Create the updated candidate object
              const updatedCand = { ...cand, status: 'success' as const, result, jobId: assignedJobId, jobTitle: assignedJobTitle };
              newCandidates[i] = updatedCand;
-             
-             // SAVE TO DB: We call the prop function if it exists
-             // We do this individually as they finish so data is saved incrementally
-             if (onCandidateAdd && (!cand.id || cand.id.includes('-') || cand.id.length < 20)) {
-               // New candidate in DB terms (assuming temp ID)
-               // Note: 'onCandidateAdd' will return a new real ID.
-               const realId = await onCandidateAdd(updatedCand);
-               newCandidates[i] = { ...updatedCand, id: realId };
-             } else if (onCandidateUpdate) {
-               await onCandidateUpdate(updatedCand);
+             completedCount++;
+             // Persist independently: database failures must not erase AI results.
+             try {
+               if (onCandidateAdd && (!cand.id || cand.id.includes('-') || cand.id.length < 20)) {
+                 const realId = await onCandidateAdd(updatedCand);
+                 newCandidates[i] = { ...updatedCand, id: realId };
+               } else if (onCandidateUpdate) {
+                 await onCandidateUpdate(updatedCand);
+               }
+             } catch (saveError) {
+               console.error('Candidate analysis completed but database saving failed:', saveError);
+               saveFailureCount++;
              }
           }
         } catch (error: any) {
@@ -987,17 +993,28 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
             errorMsg = 'مفتاح API غير صالح أو مفقود';
           } else if (errString.includes('quota') || errString.includes('429')) {
              errorMsg = 'انتهى رصيد الاستخدام (Quota Exceeded)';
+          } else if (errString.includes('413')) {
+             errorMsg = 'حجم الملفات أكبر من الحد المسموح. يرجى ضغط الملفات.';
+          } else if (/[\u0600-\u06FF]/.test(errString)) {
+             errorMsg = errString;
           } else if (errString.includes('network') || errString.includes('fetch')) {
              errorMsg = 'خطأ في الاتصال بالشبكة';
           }
 
+          failedCount++;
           newCandidates[i] = { ...cand, status: 'error', errorMessage: errorMsg };
         }
         setCandidates([...newCandidates]);
       }
     }
     setIsProcessingBatch(false);
-    showToast("تم الانتهاء من تحليل جميع الملفات وحفظ النتائج", "success");
+    if (saveFailureCount > 0) {
+      showToast('اكتمل تحليل ' + completedCount + ' ملف، لكن تعذر حفظ ' + saveFailureCount + ' نتيجة. راجع اتصال قاعدة البيانات.', 'error');
+    } else if (failedCount > 0) {
+      showToast('نجح تحليل ' + completedCount + ' ملف وتعذر تحليل ' + failedCount + ' ملف. راجع السبب لكل مرشح.', 'error');
+    } else {
+      showToast('تم تحليل ' + completedCount + ' ملف بنجاح.', 'success');
+    }
   };
 
   const handleActionClick = (candidateId: string, action: any) => {
