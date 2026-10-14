@@ -11,6 +11,37 @@ const SERVICE_ID = 'service_javm3vg';
 const TEMPLATE_ID = 'template_05nssha'; 
 const PUBLIC_KEY = 'X5ZVIKf7MmPv5JnMi'; 
 
+// EmailJS sends directly from the browser. Its status/text are not Vercel logs.
+const explainEmailSendError = (error: unknown): string => {
+  const response = error as { status?: number; text?: string; message?: string };
+  const status = typeof response?.status === 'number' ? response.status : 0;
+  const raw = (response?.text || response?.message || '').replace(/<[^>]*>/g, ' ').trim().slice(0, 240);
+  const lower = raw.toLowerCase();
+  let hint = 'تعذر إرسال البريد من EmailJS.';
+  if (/invalid.grant|reconnect|oauth|token.*expir/.test(lower)) {
+    hint = 'انتهى ربط حساب البريد في EmailJS. افتح Email Services وأعد ربط حساب Gmail أو Outlook.';
+  } else if (/quota|monthly|limit|too many|rate limit/.test(lower) || status === 429) {
+    hint = 'تم بلوغ حد إرسال البريد لدى EmailJS أو مزود البريد. تحقق من الحصة وحدود الإرسال.';
+  } else if (/template.*not found|invalid.*template/.test(lower)) {
+    hint = 'قالب EmailJS غير متاح أو معرف القالب غير صحيح.';
+  } else if (/service.*not found|invalid.*service/.test(lower)) {
+    hint = 'خدمة البريد في EmailJS غير متاحة أو معرف الخدمة غير صحيح.';
+  } else if (/origin|domain|referrer|whitelist/.test(lower)) {
+    hint = 'إعدادات أمان EmailJS لا تسمح بالنطاق الحالي. أضف ndrhr.com إلى النطاقات المسموحة.';
+  } else if (status === 412) {
+    hint = 'رفض مزود البريد تنفيذ الطلب. راجع اتصال Email Services بحساب البريد.';
+  } else if (status === 403 || status === 401) {
+    hint = 'EmailJS رفض الطلب. راجع مفتاح الخدمة وإعدادات الأمان والنطاق المسموح.';
+  } else if (status === 400 || status === 404) {
+    hint = 'تعذر التحقق من إعدادات الخدمة أو القالب في EmailJS.';
+  } else if (status >= 500) {
+    hint = 'حدث خطأ لدى EmailJS أو مزود البريد المرتبط به.';
+  } else if (/network|failed to fetch|load failed|fetch/i.test(raw)) {
+    hint = 'تعذر الوصول إلى EmailJS. افحص الاتصال أو مانع الإعلانات/الخصوصية للنطاق api.emailjs.com.';
+  }
+  return hint + (status ? ' (HTTP ' + status + ')' : '') + (raw ? ' — ' + raw : '');
+};
+
 // --- STAGE LABELS MAPPING ---
 const STAGE_LABELS: Record<string, string> = {
   'New': 'جديد',
@@ -473,6 +504,16 @@ const CommunicationModal: React.FC<{
   const [email, setEmail] = useState(candidate.manualContact?.email || candidate.result?.contactInfo?.email || '');
   const [phone, setPhone] = useState(candidate.manualContact?.phone || candidate.result?.contactInfo?.phone || '');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [formLink, setFormLink] = useState(() => {
+    try { return localStorage.getItem('ndrhr-form-link-' + (job?.id || 'general')) || ''; }
+    catch { return ''; }
+  });
+  const updateFormLink = (value: string) => {
+    setFormLink(value);
+    try { localStorage.setItem('ndrhr-form-link-' + (job?.id || 'general'), value); }
+    catch { /* local storage may be unavailable */ }
+  };
   const [location, setLocation] = useState(job?.location || '');
   const [offerFile, setOfferFile] = useState<File | null>(null);
 
@@ -520,7 +561,7 @@ const CommunicationModal: React.FC<{
       .replace(/{location}/g, location || 'المقر الرئيسي')
       .replace(/{interview_date}/g, formattedDate)
       .replace(/{interview_time}/g, formattedTime)
-      .replace(/{form_link}/g, 'https://forms.gle/xyz'); // Placeholder
+      .replace(/{form_link}/g, formLink.trim() || '[رابط الاستمارة مطلوب]');
     return processed;
   };
 
@@ -549,31 +590,58 @@ const CommunicationModal: React.FC<{
   };
 
   const handleSendEmail = async () => {
-    if (!email) { onShowToast("يرجى إدخال البريد الإلكتروني", "error"); return; }
-    
+    if (isSendingEmail || emailSent) return;
+    const recipient = email.trim();
+    setEmailError(null);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      onShowToast('يرجى إدخال بريد إلكتروني صالح للمرشح.', 'error');
+      return;
+    }
+    // Do not send the placeholder application-form link to applicants.
+    if (template.body.includes('{form_link}') && !/^https:\/\/[^\s]+\.[^\s]+/i.test(formLink.trim())) {
+      onShowToast('أدخل رابط استمارة التوظيف الصحيح قبل إرسال الرسالة.', 'error');
+      return;
+    }
+    if (!SERVICE_ID || !TEMPLATE_ID || !PUBLIC_KEY) {
+      setEmailError('إعدادات EmailJS غير مكتملة. تحقق من معرف الخدمة والقالب والمفتاح العام.');
+      return;
+    }
+
     setIsSendingEmail(true);
     try {
-      await emailjs.send(
+      const response = await emailjs.send(
         SERVICE_ID,
         TEMPLATE_ID,
         {
-          to_email: email,
+          to_email: recipient,
+          email: recipient,
+          user_email: recipient,
           to_name: candidate.result?.candidateName || candidate.name,
-          subject: subject,
+          name: candidate.result?.candidateName || candidate.name,
+          subject,
           message: body,
           job_title: job?.title || ''
         },
-        PUBLIC_KEY
+        { publicKey: PUBLIC_KEY }
       );
-      
-      // Log only - Do not close
-      onUpdateContact(candidate.id, email, phone);
-      onLog(candidate.id, actionType, 'Email');
+      // EmailJS confirms request acceptance; it does not prove inbox delivery.
+      if (response.status !== 200) throw new Error('EmailJS response status: ' + response.status);
       setEmailSent(true);
-      onShowToast("تم إرسال البريد الإلكتروني بنجاح", "success");
+      setEmailError(null);
+      onShowToast('تم قبول طلب الإرسال من EmailJS. تحقق من وصول الرسالة.', 'success');
+      // Log separately so a Firestore failure cannot be confused with an email-send failure.
+      try {
+        await Promise.resolve(onUpdateContact(candidate.id, recipient, phone));
+        await Promise.resolve(onLog(candidate.id, actionType, 'Email'));
+      } catch (logError) {
+        console.error('Email accepted, candidate activity log failed:', logError);
+        onShowToast('تم قبول البريد للإرسال، لكن تعذر تسجيل العملية في النظام.', 'error');
+      }
     } catch (error) {
-      console.error(error);
-      onShowToast("فشل إرسال البريد الإلكتروني", "error");
+      const detail = explainEmailSendError(error);
+      console.error('EmailJS send failed:', error);
+      setEmailError(detail);
+      onShowToast('فشل الإرسال من EmailJS. راجع سبب الخطأ داخل نافذة الرسالة.', 'error');
     } finally {
       setIsSendingEmail(false);
     }
@@ -674,12 +742,34 @@ const CommunicationModal: React.FC<{
             </div>
           )}
 
+          {template.body.includes('{form_link}') && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <label className="block text-xs font-bold text-amber-900 mb-2">رابط استمارة التوظيف الفعلي (مطلوب لهذه الرسالة)</label>
+              <input type="url" dir="ltr" value={formLink} onChange={(e) => updateFormLink(e.target.value)}
+                placeholder="https://forms.gle/..." className="w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-slate-900" />
+              <p className="mt-1 text-xs text-amber-700">لن يُرسل رابط تجريبي أو غير محدد إلى المرشح.</p>
+            </div>
+          )}
           <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
              <p className="text-xs font-bold text-slate-500 mb-2">معاينة الرسالة ({template.name})</p>
              <div className="text-sm font-bold text-slate-800 mb-1">{subject}</div>
              <div className="text-sm text-slate-600 whitespace-pre-line">{body}</div>
           </div>
           
+          {emailError && (
+            <div role="alert" className="rounded-xl border border-red-300 bg-red-50 p-3 text-red-800">
+              <p className="text-sm font-bold">سبب فشل الإرسال</p>
+              <p className="mt-1 text-xs leading-relaxed break-words">{emailError}</p>
+              <p className="mt-2 text-xs">لم يتم إرسال هذه الرسالة. تحقق من إعدادات EmailJS قبل إعادة المحاولة.</p>
+              <button type="button" onClick={() => {
+                const recipient = email.trim();
+                window.location.href = 'mailto:' + encodeURIComponent(recipient) +
+                  '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+              }} className="mt-3 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-bold hover:bg-red-100">
+                فتح الرسالة في برنامج البريد للإرسال اليدوي
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 pt-2">
             <button 
               onClick={handleSendWhatsApp}
@@ -690,7 +780,7 @@ const CommunicationModal: React.FC<{
             </button>
             <button 
               onClick={handleSendEmail}
-              disabled={isSendingEmail}
+              disabled={isSendingEmail || emailSent}
               className={`flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 transition-all disabled:opacity-50 ${emailSent ? 'bg-blue-100 border-blue-400 text-blue-800' : 'bg-blue-50 border-blue-100 text-blue-700 hover:bg-blue-100'}`}
             >
               {isSendingEmail ? <Loader2 className="w-6 h-6 animate-spin" /> : emailSent ? <CheckCircle className="w-6 h-6" /> : <Mail className="w-6 h-6" />}
@@ -813,7 +903,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
   const formsInputRef = useRef<HTMLInputElement>(null);
   const excelImportRef = useRef<HTMLInputElement>(null);
 
-  const isEmailConfigured = SERVICE_ID && PUBLIC_KEY && (SERVICE_ID as string) !== 'YOUR_SERVICE_ID';
+  const isEmailConfigured = Boolean(SERVICE_ID && TEMPLATE_ID && PUBLIC_KEY && SERVICE_ID !== 'YOUR_SERVICE_ID');
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setNotification({ message, type });
@@ -1310,7 +1400,7 @@ const CvAnalyzer: React.FC<CvAnalyzerProps> = ({ jobs, candidates, setCandidates
       <div className="flex flex-col md:flex-row justify-between items-start gap-4">
         <div><h2 className="text-3xl font-bold text-slate-800">تحليل المرشحين</h2></div>
         <div className="flex gap-2 items-center w-full md:w-auto">
-          <div className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${isEmailConfigured ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-600'}`}><Wifi className="w-3 h-3" /> {isEmailConfigured ? 'نظام الإيميل متصل' : 'الإيميل غير مرتبط'}</div>
+          <div className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${isEmailConfigured ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600'}`}><Wifi className="w-3 h-3" /> {isEmailConfigured ? 'إعدادات البريد موجودة (الاتصال غير مختبر)' : 'إعدادات البريد غير مكتملة'}</div>
           <button onClick={() => setIsTemplateModalOpen(true)} className="px-4 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors flex items-center gap-2 shadow-sm"><Settings className="w-5 h-5" /> <span>قوالب الرسائل</span></button>
           <div className="flex-1 md:w-80"><select className="w-full px-4 py-3 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-600 outline-none bg-white shadow-md text-blue-900 font-bold transition-all hover:border-blue-400" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)}><option value="">-- اختر الوظيفة --</option><option value="auto-match" className="bg-blue-100 text-blue-800 font-bold">✨ تحديد الوظيفة تلقائياً (AI Auto-Match)</option>{jobs.map(job => (<option key={job.id} value={job.id} className="text-slate-800">{job.title}</option>))}</select></div>
         </div>
